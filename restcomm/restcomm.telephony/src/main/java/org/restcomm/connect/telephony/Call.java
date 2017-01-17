@@ -232,6 +232,7 @@ public final class Call extends UntypedActor {
     private boolean outboundToIms;
     private String imsProxyAddress;
     private int imsProxyPort;
+    private boolean actAsImsUa;
 
     private boolean isOnHold;
 
@@ -345,6 +346,8 @@ public final class Call extends UntypedActor {
         this.recording = false;
         this.configuration = configuration;
         this.disableSdpPatchingOnUpdatingMediaSession = this.configuration.subset("runtime-settings").getBoolean("disable-sdp-patching-on-updating-mediasession", false);
+        final Configuration imsAuthentication = this.configuration.subset("runtime-settings").subset("ims-authentication");
+        this.actAsImsUa = imsAuthentication.getBoolean("act-as-ims-ua");
     }
 
     private boolean is(State state) {
@@ -998,6 +1001,9 @@ public final class Call extends UntypedActor {
                 outgoingCallRecord = outgoingCallRecord.setRingDuration(seconds);
                 recordsDao.updateCallDetailRecord(outgoingCallRecord);
             }
+            if(actAsImsUa){
+                recordsDao.removeCallDetailRecord(outgoingCallRecord.getSid());
+            }
         }
     }
 
@@ -1030,6 +1036,9 @@ public final class Call extends UntypedActor {
                 outgoingCallRecord = outgoingCallRecord.setStatus(external.name());
                 recordsDao.updateCallDetailRecord(outgoingCallRecord);
             }
+            if(actAsImsUa){
+                recordsDao.removeCallDetailRecord(outgoingCallRecord.getSid());
+            }
         }
     }
 
@@ -1057,6 +1066,9 @@ public final class Call extends UntypedActor {
             if (outgoingCallRecord != null && isOutbound()) {
                 outgoingCallRecord = outgoingCallRecord.setStatus(external.name());
                 recordsDao.updateCallDetailRecord(outgoingCallRecord);
+            }
+            if(actAsImsUa){
+                recordsDao.removeCallDetailRecord(outgoingCallRecord.getSid());
             }
         }
     }
@@ -1101,6 +1113,9 @@ public final class Call extends UntypedActor {
             if (outgoingCallRecord != null && isOutbound()) {
                 outgoingCallRecord = outgoingCallRecord.setStatus(external.name());
                 recordsDao.updateCallDetailRecord(outgoingCallRecord);
+            }
+            if(actAsImsUa){
+                recordsDao.removeCallDetailRecord(outgoingCallRecord.getSid());
             }
         }
     }
@@ -1434,6 +1449,9 @@ public final class Call extends UntypedActor {
                     logger.debug("End: " + outgoingCallRecord.getEndTime());
                     logger.debug("Duration: " + seconds);
                     logger.debug("Just updated CDR for completed call");
+                }
+                if(actAsImsUa){
+                    recordsDao.removeCallDetailRecord(outgoingCallRecord.getSid());
                 }
             }
         }
