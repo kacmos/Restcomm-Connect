@@ -77,6 +77,7 @@ import org.restcomm.connect.telephony.api.Answer;
 import org.restcomm.connect.telephony.api.BridgeManagerResponse;
 import org.restcomm.connect.telephony.api.BridgeStateChanged;
 import org.restcomm.connect.telephony.api.CallFail;
+import org.restcomm.connect.telephony.api.CallHoldStateChange;
 import org.restcomm.connect.telephony.api.CallInfo;
 import org.restcomm.connect.telephony.api.CallManagerResponse;
 import org.restcomm.connect.telephony.api.CallResponse;
@@ -204,10 +205,16 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
 
     private boolean enable200OkDelay;
 
+    // IMS authentication
+    private boolean asImsUa;
+    private String imsUaLogin;
+    private String imsUaPassword;
+
     public VoiceInterpreter(final Configuration configuration, final Sid account, final Sid phone, final String version,
                             final URI url, final String method, final URI fallbackUrl, final String fallbackMethod, final URI statusCallback,
                             final String statusCallbackMethod, final String emailAddress, final ActorRef callManager,
-                            final ActorRef conferenceManager, final ActorRef bridgeManager, final ActorRef sms, final DaoManager storage, final ActorRef monitoring, final String rcml) {
+                            final ActorRef conferenceManager, final ActorRef bridgeManager, final ActorRef sms, final DaoManager storage, final ActorRef monitoring, final String rcml,
+                            final boolean asImsUa, final String imsUaLogin, final String imsUaPassword) {
         super();
         final ActorRef source = self();
         downloadingRcml = new State("downloading rcml", new DownloadingRcml(source), null);
@@ -413,6 +420,9 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
         this.downloader = downloader();
         this.monitoring = monitoring;
         this.rcml = rcml;
+        this.asImsUa = asImsUa;
+        this.imsUaLogin = imsUaLogin;
+        this.imsUaPassword = imsUaPassword;
     }
 
     private boolean is(State state) {
@@ -543,6 +553,8 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
             onGetRelatedCall((GetRelatedCall) message, self, sender);
         } else if (JoinComplete.class.equals(klass)) {
             onJoinComplete((JoinComplete)message);
+        } else if (CallHoldStateChange.class.equals(klass)) {
+            onCallHoldStateChange((CallHoldStateChange)message, sender);
         }
     }
 
@@ -1356,6 +1368,19 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
         }
     }
 
+    private void onCallHoldStateChange(CallHoldStateChange message, ActorRef sender){
+        if (logger.isInfoEnabled()) {
+            logger.info("CallHoldStateChange received, state: " + message.state());
+        }
+        if (asImsUa){
+            if (sender.equals(outboundCall)) {
+                call.tell(message, self());
+            } else if (sender.equals(call)) {
+                outboundCall.tell(message, self());
+            }
+        }
+    }
+
     private void conferenceStateModeratorPresent(final Object message) {
         if(logger.isInfoEnabled()) {
             logger.info("VoiceInterpreter#conferenceStateModeratorPresent will unmute the call: " + call.path().toString()+", direction: "+callInfo.direction());
@@ -1995,6 +2020,10 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                     // https://bitbucket.org/telestax/telscale-restcomm/issue/132/implement-twilio-sip-out
                     String username = null;
                     String password = null;
+                    if (asImsUa) {
+                        username = imsUaLogin;
+                        password = imsUaPassword;
+                    } else {
                     if (child.attribute("username") != null) {
                         username = child.attribute("username").value();
                     }
@@ -2006,6 +2035,7 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                             username = callInfo.from();
                             password = storage.getClientsDao().getClient(callInfo.from()).getPassword();
                         }
+                    }
                     }
                     if (call != null && callInfo != null) {
                         create = new CreateCall(e164(callerId(verb)), e164(child.text()), username, password, false, timeout(verb),
@@ -2870,6 +2900,9 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                 final int seconds = (int) (end.getMillis() - callRecord.getStartTime().getMillis()) / 1000;
                 callRecord = callRecord.setDuration(seconds);
                 records.updateCallDetailRecord(callRecord);
+                if(asImsUa){
+                    records.removeCallDetailRecord(callRecord.getSid());
+            }
             }
             if (!dialActionExecuted) {
                 executeDialAction(message, outboundCall);
