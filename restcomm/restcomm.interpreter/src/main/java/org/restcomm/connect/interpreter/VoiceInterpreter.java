@@ -202,6 +202,8 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
     private ActorRef bridge;
     private boolean beep;
 
+    private boolean enable200OkDelay;
+
     public VoiceInterpreter(final Configuration configuration, final Sid account, final Sid phone, final String version,
                             final URI url, final String method, final URI fallbackUrl, final String fallbackMethod, final URI statusCallback,
                             final String statusCallbackMethod, final String emailAddress, final ActorRef callManager,
@@ -407,6 +409,7 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
         this.storage = storage;
         final Configuration runtime = configuration.subset("runtime-settings");
         playMusicForConference = Boolean.parseBoolean(runtime.getString("play-music-for-conference","false"));
+        this.enable200OkDelay = this.configuration.subset("runtime-settings").getBoolean("enable-200-ok-delay",false);
         this.downloader = downloader();
         this.monitoring = monitoring;
         this.rcml = rcml;
@@ -1054,8 +1057,12 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
         final CallStateChanged event = (CallStateChanged) message;
         if (sender == call)
             callState = event.state();
+        else
+            if(event.sipResponse()!=null && event.sipResponse()>=400){
+                outboundCallResponse = event.sipResponse();
+            }
         if(logger.isInfoEnabled()){
-            logger.info("VoiceInterpreter received CallStateChanged event: "+event.state()+ " from "+(sender == call? "call" : "outboundCall")+ ", sender path: " + sender.path() +", current VI state: "+fsm.state());
+            logger.info("VoiceInterpreter received CallStateChanged event: "+event+ " from "+(sender == call? "call" : "outboundCall")+ ", sender path: " + sender.path() +", current VI state: "+fsm.state());
         }
 
         Attribute attribute = null;
@@ -1079,7 +1086,15 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                     callManager.tell(new DestroyCall(sender), self());
                     return;
                 } else {
-                    if (sender == call) {
+                    if (enable200OkDelay && dialBranches != null && sender.equals(call)) {
+                        if (callRecord != null) {
+                            final CallDetailRecordsDao records = storage.getCallDetailRecordsDao();
+                            callRecord = records.getCallDetailRecord(callRecord.getSid());
+                            callRecord = callRecord.setStatus(callState.toString());
+                            records.updateCallDetailRecord(callRecord);
+                        }
+                        fsm.transition(message, finishDialing);
+                    } else if (sender == call) {
                         //Move to finished state only if the call actor send the Cancel.
                         fsm.transition(message, finished);
                     } else {
@@ -1185,6 +1200,7 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                             fsm.transition(message, finished);
                     }
                 break;
+            case WAIT_FOR_ANSWER:
             case IN_PROGRESS:
                 if (is(initializingCall) || is(rejecting)) {
                     if (parser != null) {
@@ -1194,9 +1210,6 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                         //This is a REST API created outgoing call
                         fsm.transition(message, downloadingRcml);
                     }
-                } else if (is(joiningConference)) {
-                    //Do nothing here
-                    //fsm.transition(message, conferencing);
                 } else if (is(forking)) {
                     if (outboundCall == null || !sender.equals(call)) {
                         outboundCall = sender;
@@ -1214,6 +1227,13 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                         final GetNextVerb next = GetNextVerb.instance();
                         parser.tell(next, self());
                     }
+                }
+                // Update the storage for conferencing.
+                if (callRecord != null && !is(initializingCall) && !is(rejecting)) {
+                    final CallDetailRecordsDao records = storage.getCallDetailRecordsDao();
+                    callRecord = records.getCallDetailRecord(callRecord.getSid());
+                    callRecord = callRecord.setStatus(callState.toString());
+                    records.updateCallDetailRecord(callRecord);
                 }
                 break;
             }
@@ -1514,7 +1534,11 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                 verb = (Tag) message;
 
                 // Answer the call.
-                call.tell(new Answer(callRecord.getSid()), source);
+                boolean confirmCall = true;
+                if (enable200OkDelay && Verbs.dial.equals(verb.name())) {
+                    confirmCall=false;
+                }
+                call.tell(new Answer(callRecord.getSid(),confirmCall), source);
             }
         }
     }
@@ -1674,7 +1698,7 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                         }
                 } else {
                     if (call != null) {
-                        call.tell(new Hangup(), null);
+                        call.tell(new Hangup(outboundCallResponse), null);
                     }
                     final StopInterpreter stop = new StopInterpreter();
                     source.tell(stop, source);
@@ -2088,6 +2112,9 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                 }
                 record(bridge);
             }
+            if(enable200OkDelay && verb !=null && Verbs.dial.equals(verb.name())){
+                call.tell(message, self());
+            }
         }
     }
 
@@ -2342,7 +2369,7 @@ public final class VoiceInterpreter extends BaseVoiceInterpreter {
                     }
                 } else if (outboundCall != null) {
                     outboundCall.tell(new Cancel(), source);
-                    call.tell(new Hangup(), self());
+                    call.tell(new Hangup(SipServletResponse.SC_REQUEST_TIMEOUT), self());
                 }
                 dialChildren = null;
                 callback();
