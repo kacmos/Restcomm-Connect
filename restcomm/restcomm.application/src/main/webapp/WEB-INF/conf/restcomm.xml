@@ -183,6 +183,7 @@
 				<permission>RestComm:*:Usage</permission>
 			</role>
 		</security-roles>
+		<enable-200-ok-delay>true</enable-200-ok-delay>
 	</runtime-settings>
 
 	<!--Bandwidth Provisioning API Configuration class: BandwidthNumberProvisioningManager
